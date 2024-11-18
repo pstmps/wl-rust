@@ -1,88 +1,9 @@
-use petgraph::graph::{DiGraph, NodeIndex};
-use blake2::Blake2bVar;
-use blake2::digest::{Update, VariableOutput};
-use std::collections::HashMap;
-
-use hex;
-use std::error::Error;
-
-fn hash_label(label: &str, digest_size: usize) -> Result<String, Box<dyn Error>> {
-    let mut hasher = Blake2bVar::new(digest_size)?;
-    hasher.update(label.as_bytes());
-    let mut buf = vec![0u8; digest_size];
-    hasher.finalize_variable(&mut buf)?;
-    Ok(hex::encode(buf))
-}
-
-
-fn init_node_labels(graph: &DiGraph<String, ()>, node_attr: Option<&str>) -> HashMap<NodeIndex, String> {
-    graph.node_indices().map(|node| {
-        let label = match node_attr {
-            Some(_attr) => graph[node].clone(),
-            None => graph.neighbors_undirected(node).count().to_string(),
-        };
-        (node, label)
-    }).collect()
-}
-
-fn neighborhood_aggregate(graph: &DiGraph<String, ()>, node: NodeIndex, node_labels: &HashMap<NodeIndex, String>) -> Result<String, Box<dyn Error>> {
-    let error_message = "{} label for {:?} not found";
-
-    let mut label_list: Vec<String> = graph.neighbors(node)
-        .map(|neighbor| -> Result<String, Box<dyn Error>> {
-            node_labels.get(&neighbor)
-                .ok_or_else(|| format!("{}{}{:?}", error_message, "Neighbor", neighbor).into())
-                .map(|label| label.clone())
-        })
-        .collect::<Result<Vec<String>, Box<dyn Error>>>()?;
-
-    label_list.sort();
-    let node_label = node_labels.get(&node)
-        .ok_or_else(|| -> String { format!("{}{}{:?}", error_message, "Node", node).into()} )?;
-
-    Ok(node_label.clone() + &label_list.concat())
-}
-
-fn weisfeiler_lehman_step(graph: &DiGraph<String, ()>, labels: &HashMap<NodeIndex, String>, digest_size: usize) -> Result<HashMap<NodeIndex, String>, Box<dyn Error>> {
-    graph.node_indices().map(|node| {
-        let label = neighborhood_aggregate(graph, node, labels)?;
-        hash_label(&label, digest_size).map(|hashed_label| (node, hashed_label))
-    }).collect::<Result<HashMap<_, _>, _>>()
-}
-
-pub fn weisfeiler_lehman_graph_hash(graph: &DiGraph<String, ()>, node_attr: Option<&str>, iterations: usize, digest_size: usize) -> Result<String, Box<dyn Error>> {
-    let mut node_labels = init_node_labels(graph, node_attr);
-
-    let mut subgraph_hash_counts = Vec::new();
-    for _ in 0..iterations {
-        node_labels = weisfeiler_lehman_step(graph, &node_labels, digest_size)?;
-        let mut counter = HashMap::new();
-        for label in node_labels.values() {
-            *counter.entry(label.clone()).or_insert(0) += 1;
-        }
-        let mut sorted_counts: Vec<_> = counter.into_iter().collect();
-        sorted_counts.sort_by_key(|k| k.0.clone());
-        subgraph_hash_counts.extend(sorted_counts);
-    }
-
-    let final_label = format!("{:?}", subgraph_hash_counts);
-    hash_label(&final_label, digest_size)
-}
+mod wl;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::wl::weisfeiler_lehman_graph_hash;
     use petgraph::graph::DiGraph;
-
-    #[test]
-    fn test_hash_label() {
-        let label = "Teststring";
-        let digest_size = 16;
-        match hash_label(label, digest_size) {
-            Ok(hash) => println!("{}", hash),
-            Err(e) => eprintln!("Error: {}", e),
-        }
-    }
 
     #[test]
     fn test_weisfeiler_lehman_graph_hash() {
@@ -166,4 +87,5 @@ mod tests {
 
         assert_ne!(hash1, hash2);
     }
+
 }
